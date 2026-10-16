@@ -1,146 +1,90 @@
 #ifndef THREAD_POOL_H
 #define THREAD_POOL_H
 
-#include <algorithm>
 #include <condition_variable>
 #include <functional>
-#include <future>
-#include <memory>
+#include <iostream>
 #include <mutex>
 #include <queue>
 #include <thread>
-#include <type_traits>
-#include <utility>
 #include <vector>
 
+using namespace std;
 
-// 阻塞队列
-//   关闭语义：Stop() 之后 Push 一律拒绝；已入队的任务仍会被逐个取走执行。
-
+// 阻塞队列：模板类，全部实现放头文件
 template <typename T> class BlockQueue {
 public:
-  // 入队
-  bool Push(T task);
-
-  // 出队
+  void Push(T task);
   bool Pop(T &task);
-
-  // 关闭：拒绝后续 Push，并唤醒全部等待中的消费者。
   void Stop();
 
 private:
-  std::queue<T> m_queue;
-  std::mutex m_mtx;
-  std::condition_variable m_cv;
+  queue<T> m_queue;
+  mutex m_mtx;
+  condition_variable m_cv;
   bool m_stop = false;
 };
 
-template <typename T> bool BlockQueue<T>::Push(T task) {
-  {
-    std::lock_guard<std::mutex> lock(m_mtx);
-    if (m_stop) {
-      return false; // 已关闭：拒绝新任务
-    }
-    m_queue.push(std::move(task));
-  } // 先离开临界区
-
-  // 通知放在锁外：否则被唤醒的线程会立刻因抢不到锁而重新阻塞，
+template <typename T> void BlockQueue<T>::Push(T task) {
+  lock_guard<mutex> lock(m_mtx);
+  m_queue.push(task);
   m_cv.notify_one();
-  return true;
 }
 
 template <typename T> bool BlockQueue<T>::Pop(T &task) {
-  std::unique_lock<std::mutex> lock(m_mtx);
+  unique_lock<mutex> lock(m_mtx);
   m_cv.wait(lock, [this]() { return !m_queue.empty() || m_stop; });
-
   if (m_stop && m_queue.empty()) {
     return false;
   }
-  task = std::move(m_queue.front());
+  task = m_queue.front();
   m_queue.pop();
   return true;
 }
 
 template <typename T> void BlockQueue<T>::Stop() {
-  {
-    std::lock_guard<std::mutex> lock(m_mtx);
-    m_stop = true;
-  }
-  m_cv.notify_all(); // 同样移出临界区
+  lock_guard<mutex> lock(m_mtx);
+  m_stop = true;
+  m_cv.notify_all();
 }
 
-// 线程池
-
+// 线程池类声明
 class ThreadPool {
 public:
-  explicit ThreadPool(int threadNum);
+  ThreadPool(int threadNum);
   ~ThreadPool();
 
-  ThreadPool(const ThreadPool &) = delete;
-  ThreadPool &operator=(const ThreadPool &) = delete;
-
-  // 提交任意可调用对象及其参数，完美转发
-  // 线程池已关闭时返回一个【无效 future】：get() 会立刻抛 std::future_error，
-  // 而不是永久阻塞。忽略返回值即可当作 fire-and-forget 用。
-  template <typename F, typename... Args>
-  auto Submit(F &&f, Args &&...args)
-      -> std::future<typename std::result_of<F(Args...)>::type>;
+  template <typename Func> void Submit(Func func);
 
 private:
-  std::vector<std::thread> m_workers;
-  BlockQueue<std::function<void()>> m_queue;
+  vector<thread> m_workers;
+  BlockQueue<function<void()>> m_queue;
 };
 
-template <typename F, typename... Args>
-auto ThreadPool::Submit(F &&f, Args &&...args)
-    -> std::future<typename std::result_of<F(Args...)>::type> {
-  using ReturnType = typename std::result_of<F(Args...)>::type;
-
-  // 用 packaged_task 承载调用：返回值经 future 取回，任务内抛出的异常
-
-  auto task = std::make_shared<std::packaged_task<ReturnType()>>(
-      std::bind(std::forward<F>(f), std::forward<Args>(args)...));
-
-  std::future<ReturnType> fut = task->get_future();
-
-  if (!m_queue.Push([task]() { (*task)(); })) {
-    return std::future<ReturnType>(); // 无效 future，调用方 valid() 可判断
-  }
-  return fut;
+// Submit是模板成员函数，必须写在头文件
+template <typename Func> void ThreadPool::Submit(Func func) {
+  m_queue.Push(func);
 }
 
-inline ThreadPool::ThreadPool(int threadNum) {
-  // threadNum <= 0 时退化为硬件并发度，至少 1 个，避免任务永远无人执行。
-  int n = threadNum;
-  if (n <= 0) {
-    n = static_cast<int>(std::thread::hardware_concurrency());
-  }
-  if (n <= 0) {
-    n = 1;
-  }
-
-  m_workers.reserve(static_cast<std::size_t>(n));
-  for (int i = 0; i < n; ++i) {
+ThreadPool::ThreadPool(int threadNum) {
+  for (int i = 0; i < threadNum; ++i) {
     m_workers.emplace_back([this]() {
-      std::function<void()> task;
+      function<void()> task;
       while (m_queue.Pop(task)) {
-        try {
-          task();
-        } catch (...) {
-          // packaged_task 已把异常收进 future
-        }
+        cout << "Worker Thread ID:" << this_thread::get_id() << endl;
+        task();
       }
+      cout << "Thread exit, ID:" << this_thread::get_id() << endl;
     });
   }
 }
 
-inline ThreadPool::~ThreadPool() {
-  m_queue.Stop(); // 关闭：拒绝新任务，唤醒全部线程
+ThreadPool::~ThreadPool() {
+  m_queue.Stop();
   for (auto &t : m_workers) {
-    if (t.joinable()) {
-      t.join(); // 排空已入队任务后再退出
-    }
+    if (t.joinable())
+      t.join();
   }
 }
 
-#endif 
+#endif
