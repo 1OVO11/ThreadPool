@@ -1,6 +1,4 @@
-// 编译: g++ -std=c++11 -pthread test_main.cpp -o tp_demo
 #include "ThreadPool.h"
-
 #include <iostream>
 
 int main() {
