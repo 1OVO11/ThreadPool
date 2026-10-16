@@ -1,17 +1,16 @@
+// 编译: g++ -std=c++11 -pthread test_main.cpp -o tp_demo
 #include "ThreadPool.h"
-#include <chrono>
+
+#include <iostream>
 
 int main() {
-  // 创建4个工作线程的线程池
-  ThreadPool pool(4);
+  ThreadPool pool(4); // 4 个工作线程
 
-  // 提交10个任务
+  // 提交 10 个任务
   for (int i = 0; i < 10; ++i) {
-    pool.Submit([i]() { cout << "Running Task " << i << endl; });
+    pool.Submit([i]() { std::cout << "Running Task " << i << std::endl; });
   }
 
-  // 主线程等待一下，方便观察输出
-  this_thread::sleep_for(chrono::seconds(2));
-  cout << "Main thread will exit." << endl;
-  return 0;
+  std::cout << "Main thread will exit." << std::endl;
+  return 0; // pool 析构时会 Stop + join，等 10 个任务全部跑完
 }
