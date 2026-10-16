@@ -27,6 +27,9 @@ private:
 
 template <typename T> void BlockQueue<T>::Push(T task) {
   lock_guard<mutex> lock(m_mtx);
+  if (m_stop) {
+    return; 
+  }
   m_queue.push(task);
   m_cv.notify_one();
 }
@@ -61,25 +64,28 @@ private:
   BlockQueue<function<void()>> m_queue;
 };
 
-// Submit是模板成员函数，必须写在头文件
 template <typename Func> void ThreadPool::Submit(Func func) {
   m_queue.Push(func);
 }
 
-ThreadPool::ThreadPool(int threadNum) {
+inline ThreadPool::ThreadPool(int threadNum) {
   for (int i = 0; i < threadNum; ++i) {
     m_workers.emplace_back([this]() {
       function<void()> task;
       while (m_queue.Pop(task)) {
         cout << "Worker Thread ID:" << this_thread::get_id() << endl;
-        task();
+        try {
+          task(); 
+        } catch (...) {
+          
+        }
       }
       cout << "Thread exit, ID:" << this_thread::get_id() << endl;
     });
   }
 }
 
-ThreadPool::~ThreadPool() {
+inline ThreadPool::~ThreadPool() { 
   m_queue.Stop();
   for (auto &t : m_workers) {
     if (t.joinable())
